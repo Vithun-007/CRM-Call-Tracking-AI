@@ -1,0 +1,63 @@
+import api from "./api";
+
+import type {
+  Lead,
+  LeadCreate,
+  LeadUpdate,
+  LeadListResponse,
+  LeadDeleteResponse,
+  LeadFilters,
+} from "../types/lead";
+
+export const leadService = {
+  createLead: async (leadData: LeadCreate): Promise<Lead> => {
+    const response = await api.post<Lead>("/leads", leadData);
+    return response.data;
+  },
+
+  getAllLeads: async (
+    search?: string,
+    skip: number = 0,
+    limit: number = 50,
+    filters: LeadFilters = {},
+  ): Promise<LeadListResponse> => {
+    const response = await api.get<LeadListResponse>("/leads", {
+      params: {
+        search: search || undefined,
+        status: filters.status || undefined,
+        priority: filters.priority || undefined,
+        follow_up_status: filters.follow_up_status || undefined,
+        skip,
+        limit,
+      },
+    });
+
+    return response.data;
+  },
+
+  getLeadById: async (leadId: number): Promise<Lead> => {
+    const response = await api.get<Lead>(`/leads/${leadId}`);
+    return response.data;
+  },
+
+  updateLead: async (
+    leadId: number,
+    leadData: LeadUpdate,
+  ): Promise<Lead> => {
+    const response = await api.put<Lead>(`/leads/${leadId}`, leadData);
+    return response.data;
+  },
+
+  deleteLead: async (leadId: number): Promise<LeadDeleteResponse> => {
+    const response = await api.delete<LeadDeleteResponse>(`/leads/${leadId}`);
+    return response.data;
+  },
+};
+
+export const getAllLeads = (
+  search: string = "",
+  skip: number = 0,
+  limit: number = 50,
+): Promise<LeadListResponse> => {
+  return leadService.getAllLeads(search, skip, limit);
+};

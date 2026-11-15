@@ -1,0 +1,768 @@
+import { useCallback, useEffect, useState } from "react";
+import {
+  Plus,
+  Search,
+  RefreshCw,
+  Pencil,
+  Trash2,
+  X,
+  Users,
+  Building2,
+  Phone,
+  Loader2,
+  CalendarDays,
+  Filter,
+  Flag,
+} from "lucide-react";
+
+import { leadService } from "../services/leadService";
+import LeadDetails from "./LeadDetails";
+import type {
+  Lead,
+  LeadCreate,
+  LeadStatus,
+  LeadPriority,
+  FollowUpFilter,
+} from "../types/lead";
+
+const emptyForm: LeadCreate = {
+  lead_name: "",
+  company: "",
+  contact_number: "",
+  status: "New",
+  priority: "Medium",
+  follow_up_date: null,
+  lead_notes: "",
+};
+
+const statusOptions: LeadStatus[] = [
+  "New",
+  "Contacted",
+  "Interested",
+  "Converted",
+  "Lost",
+];
+
+const priorityOptions: LeadPriority[] = ["Low", "Medium", "High"];
+
+function formatDate(value: string | null): string {
+  if (!value) return "Not scheduled";
+
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString();
+}
+
+function getFollowUpStatus(value: string | null): {
+  label: string;
+  className: string;
+} {
+  if (!value) {
+    return { label: "Not scheduled", className: "none" };
+  }
+
+  const dateKey = value.slice(0, 10);
+  const parts = dateKey.split("-").map(Number);
+
+  if (
+    parts.length !== 3 ||
+    parts.some((part) => !Number.isFinite(part)) ||
+    parts[0] < 1 ||
+    parts[1] < 1 ||
+    parts[1] > 12 ||
+    parts[2] < 1 ||
+    parts[2] > 31
+  ) {
+    return { label: "Scheduled", className: "scheduled" };
+  }
+
+  const now = new Date();
+  const todayUtc = Date.UTC(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  );
+  const followUpUtc = Date.UTC(parts[0], parts[1] - 1, parts[2]);
+  const difference = Math.round(
+    (followUpUtc - todayUtc) / 86400000,
+  );
+
+  if (difference < 0) {
+    return { label: "Overdue", className: "overdue" };
+  }
+
+  if (difference === 0) {
+    return { label: "Due today", className: "today" };
+  }
+
+  if (difference <= 7) {
+    return { label: "Upcoming", className: "upcoming" };
+  }
+
+  return { label: "Scheduled", className: "scheduled" };
+}
+
+function getErrorMessage(err: unknown, fallback: string): string {
+  if (typeof err === "object" && err !== null && "response" in err) {
+    const response = (err as {
+      response?: {
+        data?: {
+          detail?: string | { msg?: string }[];
+        };
+      };
+    }).response;
+
+    const detail = response?.data?.detail;
+
+    if (typeof detail === "string") return detail;
+
+    if (Array.isArray(detail)) {
+      return detail.map((item) => item.msg || "Invalid input").join(", ");
+    }
+  }
+
+  return fallback;
+}
+
+interface LeadsPageProps {
+  initialFollowUpFilter?: FollowUpFilter | "";
+}
+
+export default function LeadsPage({
+  initialFollowUpFilter = "",
+}: LeadsPageProps) {
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<LeadStatus | "">("");
+  const [priorityFilter, setPriorityFilter] = useState<LeadPriority | "">("");
+  const [followUpFilter, setFollowUpFilter] =
+    useState<FollowUpFilter | "">(initialFollowUpFilter);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [form, setForm] = useState<LeadCreate>(emptyForm);
+  const [editingLead, setEditingLead] = useState<Lead | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
+
+  const loadLeads = useCallback(async () => {
+    await Promise.resolve();
+
+    try {
+      setLoading(true);
+      setError("");
+
+      const response = await leadService.getAllLeads(
+        search.trim() || undefined,
+        0,
+        100,
+        {
+          status: statusFilter,
+          priority: priorityFilter,
+          follow_up_status: followUpFilter,
+        },
+      );
+
+      setLeads(response.data);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Unable to retrieve leads."));
+    } finally {
+      setLoading(false);
+    }
+  }, [search, statusFilter, priorityFilter, followUpFilter]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadLeads();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadLeads]);
+
+  const openCreateModal = () => {
+    setEditingLead(null);
+    setForm({ ...emptyForm });
+    setError("");
+    setModalOpen(true);
+  };
+
+  const openEditModal = (lead: Lead) => {
+    setEditingLead(lead);
+    setForm({
+      lead_name: lead.lead_name,
+      company: lead.company,
+      contact_number: lead.contact_number,
+      status: lead.status,
+      priority: lead.priority,
+      follow_up_date: lead.follow_up_date,
+      lead_notes: lead.lead_notes || "",
+    });
+    setError("");
+    setModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setModalOpen(false);
+    setEditingLead(null);
+    setForm({ ...emptyForm });
+    setError("");
+  };
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    try {
+      setSaving(true);
+      setError("");
+      setMessage("");
+
+      const payload: LeadCreate = {
+        ...form,
+        lead_name: form.lead_name.trim(),
+        company: form.company.trim(),
+        contact_number: form.contact_number.trim(),
+        lead_notes: form.lead_notes?.trim() || null,
+        follow_up_date: form.follow_up_date || null,
+      };
+
+      if (editingLead) {
+        await leadService.updateLead(editingLead.id, payload);
+        setMessage("Lead updated successfully.");
+      } else {
+        await leadService.createLead(payload);
+        setMessage("Lead created successfully.");
+      }
+
+      closeModal();
+      await loadLeads();
+    } catch (err: unknown) {
+      setError(
+        getErrorMessage(
+          err,
+          "Unable to save lead. Please check your information.",
+        ),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (lead: Lead) => {
+    const confirmed = window.confirm(
+      `Delete ${lead.lead_name} from ${lead.company}?\n\nAll call interactions belonging to this lead will also be deleted.`,
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setError("");
+      setMessage("");
+
+      await leadService.deleteLead(lead.id);
+
+      setMessage("Lead deleted successfully.");
+      await loadLeads();
+    } catch {
+      setError("Unable to delete this lead. Please try again.");
+    }
+  };
+
+  if (selectedLeadId !== null) {
+    return (
+      <LeadDetails
+        leadId={selectedLeadId}
+        onBack={() => setSelectedLeadId(null)}
+        onEdit={(lead) => {
+          setSelectedLeadId(null);
+          openEditModal(lead);
+        }}
+      />
+    );
+  }
+
+  const clearFilters = () => {
+    setSearch("");
+    setStatusFilter("");
+    setPriorityFilter("");
+    setFollowUpFilter("");
+  };
+
+  const uniqueCompanies = new Set(
+    leads.map((lead) => lead.company.toLowerCase()),
+  ).size;
+
+  return (
+    <div className="leads-page">
+      <div className="page-heading">
+        <div>
+          <div className="eyebrow">CUSTOMER MANAGEMENT</div>
+          <h2>Lead Management</h2>
+          <p>Create, organize and maintain your business leads.</p>
+        </div>
+
+        <button className="primary-button" onClick={openCreateModal}>
+          <Plus size={17} /> Add Lead
+        </button>
+      </div>
+
+      <div className="lead-summary-grid">
+        <div className="lead-summary-card">
+          <div className="lead-summary-icon blue">
+            <Users size={19} />
+          </div>
+          <div>
+            <span>Total leads</span>
+            <strong>{leads.length}</strong>
+          </div>
+        </div>
+
+        <div className="lead-summary-card">
+          <div className="lead-summary-icon purple">
+            <Building2 size={19} />
+          </div>
+          <div>
+            <span>Companies represented</span>
+            <strong>{uniqueCompanies}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="followup-quick-filters">
+        <div className="followup-quick-heading">
+          <CalendarDays size={17} />
+          <span>Follow-up management</span>
+        </div>
+        <div className="followup-quick-options">
+          {([
+            ["", "All leads"],
+            ["overdue", "Overdue"],
+            ["today", "Due today"],
+            ["upcoming", "Upcoming"],
+            ["none", "No follow-up"],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value || "all"}
+              type="button"
+              className={`followup-quick-button ${
+                followUpFilter === value ? "active" : ""
+              } ${value ? `filter-${value}` : ""}`}
+              aria-pressed={followUpFilter === value}
+              onClick={() => setFollowUpFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="content-card page-card">
+        <div className="toolbar lead-toolbar">
+          <div>
+            <h3>All leads</h3>
+            <p>Manage your customer and prospect records.</p>
+          </div>
+
+          <div className="toolbar-actions">
+            <div className="search-box">
+              <Search size={17} />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search name, company or number..."
+              />
+              {search && (
+                <button
+                  className="clear-search"
+                  onClick={() => setSearch("")}
+                  aria-label="Clear search"
+                  type="button"
+                >
+                  <X size={15} />
+                </button>
+              )}
+            </div>
+
+            <button
+              className="refresh-button"
+              onClick={() => void loadLeads()}
+              title="Refresh leads"
+              type="button"
+            >
+              <RefreshCw size={16} />
+            </button>
+          </div>
+        </div>
+
+        <div className="lead-filter-bar">
+          <div className="lead-filter-label">
+            <Filter size={16} />
+            <span>Filters</span>
+          </div>
+
+          <select
+            aria-label="Filter by status"
+            value={statusFilter}
+            onChange={(event) =>
+              setStatusFilter(event.target.value as LeadStatus | "")
+            }
+          >
+            <option value="">All statuses</option>
+            {statusOptions.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Filter by priority"
+            value={priorityFilter}
+            onChange={(event) =>
+              setPriorityFilter(event.target.value as LeadPriority | "")
+            }
+          >
+            <option value="">All priorities</option>
+            {priorityOptions.map((priority) => (
+              <option key={priority} value={priority}>
+                {priority} priority
+              </option>
+            ))}
+          </select>
+
+          {(search || statusFilter || priorityFilter || followUpFilter) && (
+            <button
+              type="button"
+              className="lead-clear-filters"
+              onClick={clearFilters}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        {message && (
+          <div className="feedback success-feedback">{message}</div>
+        )}
+
+        {error && !modalOpen && (
+          <div className="feedback error-feedback">{error}</div>
+        )}
+
+        {loading ? (
+          <div className="loading-state">
+            <Loader2 className="spin" size={24} />
+            <span>Loading leads...</span>
+          </div>
+        ) : leads.length === 0 ? (
+          <div className="table-placeholder">
+            <div className="empty-icon">
+              <Users size={27} />
+            </div>
+            <h3>
+              {search || statusFilter || priorityFilter || followUpFilter
+                ? "No matching leads found"
+                : "No leads yet"}
+            </h3>
+            <p>
+              {search || statusFilter || priorityFilter || followUpFilter
+                ? "Try changing your search or filters."
+                : "Create your first lead to start managing customer interactions."}
+            </p>
+            {!search && !statusFilter && !priorityFilter && !followUpFilter && (
+              <button className="primary-button" onClick={openCreateModal}>
+                <Plus size={16} /> Create your first lead
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="table-scroll">
+            <table className="leads-table enhanced-leads-table">
+              <thead>
+                <tr>
+                  <th>LEAD</th>
+                  <th>COMPANY</th>
+                  <th>CONTACT NUMBER</th>
+                  <th>STATUS</th>
+                  <th>PRIORITY</th>
+                  <th>FOLLOW-UP</th>
+                  <th>CREATED</th>
+                  <th>ACTIONS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leads.map((lead) => (
+                  <tr key={lead.id}>
+                    <td>
+                      <div className="lead-name-cell">
+                        <div className="lead-avatar">
+                          {lead.lead_name.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <button
+                            type="button"
+                            className="lead-profile-link"
+                            onClick={() => setSelectedLeadId(lead.id)}
+                            title={`View ${lead.lead_name}'s customer profile`}
+                          >
+                            {lead.lead_name}
+                          </button>
+                          <span>Lead #{lead.id}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="company-cell">
+                        <Building2 size={15} />
+                        {lead.company}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="company-cell">
+                        <Phone size={14} />
+                        {lead.contact_number}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className={`lead-status-badge status-${lead.status.toLowerCase()}`}
+                      >
+                        {lead.status}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className={`lead-priority-badge priority-${lead.priority.toLowerCase()}`}
+                      >
+                        <Flag size={12} />
+                        {lead.priority}
+                      </span>
+                    </td>
+                    <td className="date-cell">
+                      <div className="lead-follow-up-cell">
+                        <span
+                          className={`lead-follow-up-status ${
+                            getFollowUpStatus(lead.follow_up_date).className
+                          }`}
+                        >
+                          {getFollowUpStatus(lead.follow_up_date).label}
+                        </span>
+                        <span className="lead-follow-up">
+                          <CalendarDays size={14} />
+                          {formatDate(lead.follow_up_date)}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="date-cell">
+                      {new Date(lead.created_at).toLocaleDateString()}
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        <button
+                          className="action-button edit-action"
+                          onClick={() => openEditModal(lead)}
+                          title="Edit lead"
+                          type="button"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          className="action-button delete-action"
+                          onClick={() => void handleDelete(lead)}
+                          title="Delete lead"
+                          type="button"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <div className="table-bottom">
+              Showing {leads.length} lead{leads.length !== 1 ? "s" : ""}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {modalOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeModal();
+          }}
+        >
+          <div className="lead-modal enhanced-lead-modal">
+            <div className="modal-heading">
+              <div>
+                <h3>{editingLead ? "Edit lead" : "Create new lead"}</h3>
+                <p>
+                  {editingLead
+                    ? "Update customer details and lead progress."
+                    : "Enter customer details and lead management information."}
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                onClick={closeModal}
+                aria-label="Close dialog"
+                type="button"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit}>
+              <div className="lead-form-grid">
+                <label className="field">
+                  Lead name
+                  <input
+                    required
+                    minLength={2}
+                    maxLength={150}
+                    value={form.lead_name}
+                    onChange={(event) =>
+                      setForm({ ...form, lead_name: event.target.value })
+                    }
+                    placeholder="Enter full name"
+                  />
+                </label>
+
+                <label className="field">
+                  Company
+                  <input
+                    required
+                    minLength={2}
+                    maxLength={200}
+                    value={form.company}
+                    onChange={(event) =>
+                      setForm({ ...form, company: event.target.value })
+                    }
+                    placeholder="Enter company name"
+                  />
+                </label>
+
+                <label className="field">
+                  Contact number
+                  <input
+                    required
+                    minLength={5}
+                    maxLength={30}
+                    value={form.contact_number}
+                    onChange={(event) =>
+                      setForm({ ...form, contact_number: event.target.value })
+                    }
+                    placeholder="Enter contact number"
+                  />
+                </label>
+
+                <label className="field">
+                  Lead status
+                  <select
+                    value={form.status}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        status: event.target.value as LeadStatus,
+                      })
+                    }
+                  >
+                    {statusOptions.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field">
+                  Priority
+                  <select
+                    value={form.priority}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        priority: event.target.value as LeadPriority,
+                      })
+                    }
+                  >
+                    {priorityOptions.map((priority) => (
+                      <option key={priority} value={priority}>
+                        {priority}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field">
+                  Follow-up date
+                  <input
+                    type="date"
+                    value={form.follow_up_date || ""}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        follow_up_date: event.target.value || null,
+                      })
+                    }
+                  />
+                </label>
+              </div>
+
+              <label className="field lead-notes-field">
+                Lead notes
+                <textarea
+                  rows={4}
+                  maxLength={5000}
+                  value={form.lead_notes || ""}
+                  onChange={(event) =>
+                    setForm({ ...form, lead_notes: event.target.value })
+                  }
+                  placeholder="Add customer requirements, interests or other relevant details..."
+                />
+                <span className="lead-notes-count">
+                  {(form.lead_notes || "").length}/5000
+                </span>
+              </label>
+
+              {error && (
+                <div className="feedback error-feedback">{error}</div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="cancel-button"
+                  onClick={closeModal}
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="spin" size={16} />
+                      Saving...
+                    </>
+                  ) : editingLead ? (
+                    "Save changes"
+                  ) : (
+                    "Create lead"
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
