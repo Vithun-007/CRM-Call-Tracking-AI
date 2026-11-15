@@ -29,3 +29,11 @@ htmlcov/
 .coverage
 dist/
 build/
+
+# Local backups and temporary files
+*.backup
+*.backup_*
+*.encoding-backup
+README_before_submission.md
+backups/
+frontend/frontend/
